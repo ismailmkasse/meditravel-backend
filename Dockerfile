@@ -26,4 +26,5 @@ COPY src ./src
 EXPOSE 8000
 
 # 10. Start app
-CMD ["node", "src/index.js"]
+CMD ["sh", "-c", "npx prisma generate && npx prisma migrate deploy && node src/index.js"]
+
