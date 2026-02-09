@@ -3,6 +3,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { config } from './config.js';
 import { prisma } from './prisma.js';
+
 import authRoutes from './routes/auth.js';
 import meRoutes from './routes/me.js';
 import providersRoutes from './routes/providers.js';
@@ -13,21 +14,49 @@ import paymentsRoutes from './routes/payments.js';
 import fxRoutes from './routes/fx.js';
 import pricingRoutes from './routes/pricing.js';
 import { stripeWebhookHandler } from './routes/stripeWebhook.js';
+
 import cron from 'node-cron';
 import { runDuePayouts } from './services/payouts.js';
 
 const app = express();
 
-app.use(cors({ origin: config.corsOrigin, credentials: true }));
+/* =========================
+   CORS (Vercel prod + preview)
+   ========================= */
+const allowExact = new Set([
+  'https://meditravel-86cc.vercel.app'
+]);
+
+const isVercel = (origin) =>
+  typeof origin === 'string' && origin.endsWith('.vercel.app');
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true); // server-to-server / health
+      if (allowExact.has(origin) || isVercel(origin)) return cb(null, true);
+      return cb(new Error('CORS blocked: ' + origin), false);
+    },
+    credentials: true
+  })
+);
+
+app.options('*', cors());
+
+/* ========================= */
+
 app.use(morgan('dev'));
 
-// Stripe webhook MUST use raw body for signature verification.
-app.post('/payments/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
+// Stripe webhook MUST use raw body
+app.post(
+  '/payments/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  stripeWebhookHandler
+);
 
 app.use(express.json({ limit: '2mb' }));
 
 app.get('/health', async (req, res) => {
-  // quick DB check
   try {
     await prisma.$queryRaw`SELECT 1`;
     return res.json({ ok: true, db: true });
@@ -51,7 +80,9 @@ if (config.cronEnabled) {
   cron.schedule(config.cronPayoutSpec, async () => {
     try {
       const results = await runDuePayouts({ limit: 50 });
-      if (results?.length) console.log('[cron] payouts processed', results.length);
+      if (results?.length) {
+        console.log('[cron] payouts processed', results.length);
+      }
     } catch (e) {
       console.error('[cron] payout job failed', e);
     }
@@ -59,10 +90,9 @@ if (config.cronEnabled) {
   console.log('[cron] enabled with spec:', config.cronPayoutSpec);
 }
 
-
 // 404
 app.use((req, res) => res.status(404).json({ error: 'not_found' }));
 
 app.listen(config.port, () => {
-  console.log(`MediTravel API listening on http://localhost:${config.port}`);
+  console.log(`MediTravel API listening on port ${config.port}`);
 });
