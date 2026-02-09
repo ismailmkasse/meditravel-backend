@@ -1,0 +1,296 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  PROVIDER
+  ADMIN
+}
+
+enum ProviderType {
+  HOTEL
+  CLINIC
+  TOUR
+  TRANSPORT
+}
+
+enum QuotationStatus {
+  OPEN
+  IN_REVIEW
+  RESPONDED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  INITIATED
+  AUTHORIZED
+  HELD
+  RELEASED
+  REFUNDED
+  FAILED
+}
+
+enum VerificationDocStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  providerProfile          ProviderProfile?
+  quotations               QuotationRequest[]        @relation("UserQuotations")
+  messages                 QuotationMessage[]
+  notifications            Notification[]
+  payments                 Payment[]
+  reviewedVerificationDocs ProviderVerificationDoc[] @relation("ReviewedDocs")
+  auditLogs                AuditLog[]                @relation("AuditActor")
+}
+
+model ProviderProfile {
+  id               String       @id @default(cuid())
+  userId           String       @unique
+  type             ProviderType
+  displayName      String
+  countryCode      String
+  city             String
+  verified         Boolean      @default(false)
+  verificationNote String?
+
+  // Stripe Connect
+  stripeAccountId        String?
+  stripeOnboardingStatus String? // e.g. NOT_STARTED, PENDING, COMPLETE
+  stripeChargesEnabled   Boolean   @default(false)
+  stripePayoutsEnabled   Boolean   @default(false)
+  stripeDetailsSubmitted Boolean   @default(false)
+  stripeOnboardedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User               @relation(fields: [userId], references: [id])
+  procedures Procedure[]
+  quotations QuotationRequest[] @relation("ProviderQuotations")
+
+  verificationDocs ProviderVerificationDoc[]
+  payouts          Payout[]
+}
+
+model Procedure {
+  id          String  @id @default(cuid())
+  providerId  String
+  name        String
+  category    String
+  priceMinUSD Int
+  priceMaxUSD Int
+  description String?
+  active      Boolean @default(true)
+
+  provider   ProviderProfile    @relation(fields: [providerId], references: [id])
+  quotations QuotationRequest[]
+
+  @@index([providerId])
+}
+
+model QuotationRequest {
+  id          String          @id @default(cuid())
+  userId      String
+  providerId  String
+  procedureId String
+  status      QuotationStatus @default(OPEN)
+  notes       String?
+  slaHours    Int             @default(24)
+  slaDueAt    DateTime
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  user      User            @relation("UserQuotations", fields: [userId], references: [id])
+  provider  ProviderProfile @relation("ProviderQuotations", fields: [providerId], references: [id])
+  procedure Procedure       @relation(fields: [procedureId], references: [id])
+
+  attachments QuotationAttachment[]
+  messages    QuotationMessage[]
+  payments    Payment[]
+
+  @@index([userId])
+  @@index([providerId])
+  @@index([status])
+}
+
+model QuotationAttachment {
+  id          String   @id @default(cuid())
+  quotationId String
+  fileName    String
+  mimeType    String
+  sizeBytes   Int
+  storagePath String
+  createdAt   DateTime @default(now())
+
+  quotation QuotationRequest @relation(fields: [quotationId], references: [id])
+
+  @@index([quotationId])
+}
+
+model QuotationMessage {
+  id          String   @id @default(cuid())
+  quotationId String
+  senderId    String
+  body        String
+  createdAt   DateTime @default(now())
+
+  quotation QuotationRequest @relation(fields: [quotationId], references: [id])
+  sender    User             @relation(fields: [senderId], references: [id])
+
+  @@index([quotationId])
+  @@index([senderId])
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  userId      String
+  quotationId String?
+  amountCents Int
+  currency    String        @default("USD")
+  status      PaymentStatus @default(INITIATED)
+
+  escrowHoldUntil           DateTime?
+  providerReleaseEligibleAt DateTime?
+  providerReleasedAt        DateTime?
+
+  externalRef String?
+
+  // Stripe PaymentIntents (not Connect)
+  stripePaymentIntentId String?
+  stripeChargeId        String?
+  capturedAt            DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user      User              @relation(fields: [userId], references: [id])
+  quotation QuotationRequest? @relation(fields: [quotationId], references: [id])
+  payout    Payout?           @relation("PaymentPayout")
+
+  @@index([userId])
+  @@index([quotationId])
+  @@index([status])
+}
+
+model ProviderVerificationDoc {
+  id           String                @id @default(cuid())
+  providerId   String
+  docType      String
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+  storagePath  String
+  status       VerificationDocStatus @default(PENDING)
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+  createdAt    DateTime              @default(now())
+
+  provider   ProviderProfile @relation(fields: [providerId], references: [id])
+  reviewedBy User?           @relation("ReviewedDocs", fields: [reviewedById], references: [id])
+
+  @@index([providerId])
+  @@index([status])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+}
+
+model ExchangeRate {
+  id        String   @id @default(cuid())
+  base      String
+  quote     String
+  rate      Float
+  asOf      DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([base, quote, asOf])
+  @@index([base, quote])
+}
+
+model Payout {
+  id          String       @id @default(cuid())
+  providerId  String
+  paymentId   String       @unique
+  amountCents Int
+  currency    String
+  status      PayoutStatus @default(PENDING)
+  scheduledAt DateTime
+  paidAt      DateTime?
+
+  // Stripe Connect transfer / payout references (optional)
+  externalRef String?
+  error       String?
+
+  createdAt DateTime @default(now())
+
+  provider ProviderProfile @relation(fields: [providerId], references: [id])
+  payment  Payment         @relation("PaymentPayout", fields: [paymentId], references: [id])
+
+  @@index([providerId, status])
+  @@index([status, scheduledAt])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, readAt])
+}
+
+model WebhookEvent {
+  id            String    @id @default(cuid())
+  provider      String // e.g. STRIPE
+  stripeEventId String    @unique
+  type          String
+  livemode      Boolean
+  receivedAt    DateTime  @default(now())
+  processedAt   DateTime?
+  payloadHash   String?
+
+  @@index([provider, receivedAt])
+}
